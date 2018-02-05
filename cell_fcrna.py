@@ -1,3 +1,5 @@
+#implementation of model based on 'Microscopy Cell Counting with Fully Convolutional Regression Networks' by Xie et al. 
+
 from keras.layers import Input
 from keras.layers.core import Dropout, Lambda
 from keras.layers.convolutional import Conv2D, Conv2DTranspose, UpSampling2D
