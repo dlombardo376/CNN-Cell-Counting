@@ -15,9 +15,10 @@ from tqdm import tqdm #adds a progress bar for all for loops
 from itertools import chain
 from skimage.io import imread, imshow, imread_collection, concatenate_images #image processing
 from skimage.transform import resize
-from skimage.morphology import label
+from skimage.morphology import label,dilation
 from skimage.util import invert
 from skimage.color import rgb2gray
+from skimage.segmentation import find_boundaries
 
 from keras.models import Model, load_model
 from keras.layers import Input
@@ -33,18 +34,60 @@ from scipy import ndimage
 import tensorflow as tf
 
 #define global constants
-IMG_WIDTH = 256
-IMG_HEIGHT = 256
+IMG_WIDTH = 96
+IMG_HEIGHT = 96
 IMG_CHANNELS = 1
 TRAIN_PATH = 'input/stage1_train/'
 TEST_PATH = 'input/stage1_test/'
-N_CLASSES = 1
+N_CLASSES = 2
 
 warnings.filterwarnings('ignore',category=UserWarning,module='skimage')
 seed=42
 random.seed = seed
 np.random.seed = seed
-
+def growCells(in_density,bound_density, width, height):
+	#make a starting list of cells by labelling "inner" regions
+	nuclei = label(in_density > 0.9)
+	allCells = np.zeros((nuclei.max(),width, height))
+	cellCount = 0
+	
+	#while the list is greater than zero:
+	while nuclei.max()>0:
+		#choose one cell
+		cell = (nuclei == 1)
+		
+		#calculate the edge
+		cell_boundary = find_boundaries(cell,mode='inner')
+		
+		#calculate the probability this edge being inner, and of being boundary
+		in_prob = np.average(in_density[cell>0])
+		bound_prob = np.average(bound_density[cell>0])
+		
+		#grow cell, maybe by dilations method, and get new edge
+		new_cell = dilation(cell)
+		
+		#repeat until boundary probability stops increasing
+		counter = 0
+		while(counter<width):
+			counter = counter + 1
+			new_in_prob = np.average(in_density[new_cell>0])
+			new_bound_prob = np.average(bound_density[new_cell>0])
+			if(new_bound_prob > bound_prob):
+				cell = new_cell
+				new_cell = dilation(cell)
+			else:
+				break
+		#if cell intersects another nuclei, delete that nuclei from the list
+		
+		#save grown cell
+		allCells[cellCount] = cell
+		cellCount = cellCount + 1
+		
+		#remove cell from list of starting nuclei
+		nuclei = nuclei - 1
+		nuclei = np.maximum(nuclei,0)
+	return allCells, cellCount
+	
 def prob_to_centers(x, cutoff=0.5):
 	lab_img = label(x > cutoff) #skimage finds connected regions and labels them
 	centers = []
@@ -89,33 +132,42 @@ model = load_model('model-dsbowl2018-1.h5')
 preds_test = model.predict(X_test, verbose=1)
 
 # Threshold predictions
-preds_test_t = (preds_test > 0.75).astype(np.uint8)
-
-#flatten the predictions to one layer
-preds_test_flat = preds_test_t
+preds_nuclei = (preds_test[:,:,:,0] > 0.5).astype(np.uint8)
+preds_inner = preds_test[:,:,:,0]
+preds_bound = preds_test[:,:,:,1]
 
 # Create list of upsampled test masks, so that the masks match the original image sizes
-preds_test_upsampled = []
+preds_inner_upsampled = []
+preds_bound_upsampled = []
 for i in range(len(preds_test)):
-    preds_test_upsampled.append(resize(np.squeeze(preds_test_flat[i]), 
-                                       (sizes_test[i][0], sizes_test[i][1]), 
-                                       mode='constant', preserve_range=True))
+	preds_inner_upsampled.append(resize(np.squeeze(preds_inner[i]), 
+									   (sizes_test[i][0], sizes_test[i][1]), 
+									   mode='constant', preserve_range=True))
+	preds_bound_upsampled.append(resize(np.squeeze(preds_bound[i]), 
+									   (sizes_test[i][0], sizes_test[i][1]), 
+									   mode='constant', preserve_range=True))
 
 #need take the whole mask of the training set and break them down into individual cells
 #use skimage to find separate cells, may have trouble if they overlap
 new_test_ids = []
 rles = []
 for n, id_ in enumerate(test_ids):
-	cx,cy = prob_to_centers(preds_test_upsampled[n])
 	#rles.extend(rle)
 	#new_test_ids.extend([id_] * len(rle))
-	if(n<10):
+	if(n<5):
+		allCells, cellCount = growCells(preds_inner_upsampled[n],
+					preds_bound_upsampled[n],sizes_test[n][0], sizes_test[n][1])
 		pltImg = resize(X_test[n], (sizes_test[n][0], sizes_test[n][1]), mode='constant', preserve_range=True)
 		plt.subplot(221)
 		imshow(np.squeeze(pltImg))
 		plt.subplot(222)
-		plt.plot(cy,cx,'ro')
-		plt.axis([0,sizes_test[n][1],sizes_test[n][0],0])
+		imshow(np.squeeze(preds_inner_upsampled[n]))
 		plt.subplot(223)
-		imshow(np.squeeze(preds_test_upsampled[n]))
+		imshow(np.squeeze(preds_bound_upsampled[n]))
+		
+		plotCells = np.zeros((sizes_test[n][0], sizes_test[n][1]))
+		for i in range(cellCount):
+			plotCells = np.maximum(plotCells,allCells[i]*(i+1))
+		plt.subplot(224)
+		imshow(plotCells)
 		plt.show()

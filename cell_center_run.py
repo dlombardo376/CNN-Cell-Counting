@@ -26,10 +26,10 @@ from keras import backend as K
 import tensorflow as tf
 
 #define global constants
-IMG_WIDTH = 256
-IMG_HEIGHT = 256
+IMG_WIDTH = 96
+IMG_HEIGHT = 96
 IMG_CHANNELS = 1
-IMG_CLASSES = 1
+IMG_CLASSES = 2
 TRAIN_PATH = 'input/stage1_train/'
 TEST_PATH = 'input/stage1_test/'
 
@@ -52,7 +52,8 @@ class predictEpoch(Callback):
         nx = np.size(ims,2)
         combinedImg = np.concatenate((ims[...,0].reshape([-1,nx]),
                                       gt[...,0].reshape([-1,nx]),
-                                      preds[...,0].reshape([-1,nx])), axis=1)
+                                      preds[...,0].reshape([-1,nx]),
+									  preds[...,1].reshape([-1,nx])), axis=1)
        
         #save image
         path = 'predictions/epoch_%i.jpg'%(epoch+1)
@@ -60,9 +61,8 @@ class predictEpoch(Callback):
                                        'JPEG', dpi=[300,300], quality=90)
 					
 					
-X_train, Y_train = cell_input.loadImages(TRAIN_PATH, IMG_HEIGHT, IMG_WIDTH, IMG_CHANNELS)
-
-#cell_input.allMaskValuesHistogram(TRAIN_PATH, IMG_HEIGHT, IMG_WIDTH, IMG_CHANNELS)
+#X_train, Y_train = cell_input.loadImages(TRAIN_PATH, IMG_HEIGHT, IMG_WIDTH, IMG_CHANNELS)
+X_train, Y_train = cell_input.loadImagesBoundaries(TRAIN_PATH, IMG_HEIGHT, IMG_WIDTH, IMG_CHANNELS)
 
 X_val = X_train[(len(X_train)-60):]
 Y_val = Y_train[(len(Y_train)-60):]	
@@ -74,7 +74,8 @@ data_gen_args = dict(featurewise_center=False,
                      width_shift_range=0.1,
                      height_shift_range=0.1,
                      zoom_range=0.1, horizontal_flip=True,
-					 vertical_flip=True)
+					 vertical_flip=True,
+					 fill_mode = 'reflect', cval = 0)
 
 					 
 image_datagen = ImageDataGenerator(**data_gen_args)
@@ -87,18 +88,21 @@ image_generator = image_datagen.flow(X_train,batch_size=16,seed=seed, shuffle=Tr
 mask_generator = mask_datagen.flow(Y_train,batch_size=16,seed=seed, shuffle=True)
 train_generator = zip(image_generator, mask_generator)
 
-# plotCounter=0
-# for X_batch, Y_batch in train_generator:
-	# plt.subplot(121)
-	# plt.imshow(np.squeeze(X_batch[0]))
+plotCounter=0
+for X_batch, Y_batch in train_generator:
+	plt.subplot(221)
+	plt.imshow(np.squeeze(X_batch[0]))
 	
-	# plt.subplot(122)
-	# plt.imshow(np.squeeze(Y_batch[0]))
+	plt.subplot(222)
+	plt.imshow(Y_batch[0,:,:,0])
 	
-	# plt.show()
-	# plotCounter = plotCounter+1;
-	# if(plotCounter>10):
-		# break
+	plt.subplot(223)
+	plt.imshow(Y_batch[0,:,:,1])
+	
+	plt.show()
+	plotCounter = plotCounter+1;
+	if(plotCounter>10):
+		break
 	
 fcrn_model = fcrna.FCRN_A_Class(IMG_HEIGHT, IMG_WIDTH, IMG_CHANNELS, IMG_CLASSES)
 
@@ -115,4 +119,4 @@ predictions = predictEpoch()
 #occasionally save the model as h5 output
 checkpointer = ModelCheckpoint('model-dsbowl2018-1.h5',verbose=1,save_best_only=True)
 
-results = model.fit_generator(train_generator,epochs=50,callbacks=[earlystopper,checkpointer, predictions],steps_per_epoch = 500, validation_data = (X_val, Y_val))
+results = model.fit_generator(train_generator,epochs=25,callbacks=[earlystopper,checkpointer, predictions],steps_per_epoch = 100, validation_data = (X_val, Y_val))
