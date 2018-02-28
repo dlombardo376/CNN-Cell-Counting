@@ -35,8 +35,8 @@ from scipy import ndimage
 import tensorflow as tf
 
 #define global constants
-IMG_WIDTH = 96
-IMG_HEIGHT = 96
+IMG_WIDTH = 128
+IMG_HEIGHT = 128
 MASK_WIDTH = 256
 MASK_HEIGHT = 256
 IMG_CHANNELS = 1
@@ -59,39 +59,56 @@ def mean_iou(y_true,y_pred):
 			score = tf.identity(score)
 		prec.append(score) #sum all the threshold mean iou's
 	return K.mean(K.stack(prec),axis=0)
+	
+def compareCenters(centerList,maskList):
+	numDiff = (len(centerList) - len(maskList))
+	aveDist = 0
+	
+	trueList = maskList[:]
+	testList = centerList[:]
+	distanceList = []
 
-# Run-length encoding stolen from https://www.kaggle.com/rakhlin/fast-run-length-encoding-python
-def rle_encoding(x):
-    dots = np.where(x.T.flatten() == 1)[0]
-    run_lengths = []
-    prev = -2
-    for b in dots:
-        if (b>prev+1): run_lengths.extend((b + 1, 0))
-        run_lengths[-1] += 1
-        prev = b
-    return run_lengths
-
-def prob_to_rles(x, cutoff=0.5):
-	lab_img = label(x)#label(x > cutoff) #skimage finds connected regions and labels them
-	for i in range(1, lab_img.max() + 1):
-		if(np.sum(lab_img==i)>10):
-			yield rle_encoding(lab_img == i) #make a run length encoding of each segment
+	#print(len(trueList))
+	#print(len(testList))
+	
+	while(len(testList)>0):
+		maxIndex = -1
+		maxDist = 100000
+		for i in range(len(trueList)):
+			xDist = testList[0][0] - trueList[i][0]
+			yDist = testList[0][1] - trueList[i][1]
+			newDist = np.sqrt(xDist**2 + yDist**2)
+			if(newDist < maxDist):
+				maxDist = newDist
+				maxIndex = i
+				#print('found max',maxIndex,maxDist)
+		
+		if(maxIndex>-1):
+			distanceList.append(maxDist)
+			aveDist = aveDist + maxDist
+			del trueList[maxIndex]
+		del testList[0]
+	
+	#print(len(distanceList))
+	aveDist = aveDist/len(distanceList)	
+	
+	return aveDist,numDiff,min(distanceList),max(distanceList)
 	
 #get all folder ids in each set
-test_ids = next(os.walk(TEST_PATH))[1]
-#test_ids = test_ids[:5]
+train_ids = next(os.walk(TRAIN_PATH))[1]
+#train_ids = train_ids[23:26]
 
 #get all the image data
 sys.stdout.flush() #force python to write everything out, not keep in a buffer
 	
 # Get and resize test images
-X_test = np.zeros((len(test_ids), IMG_HEIGHT, IMG_WIDTH, IMG_CHANNELS), dtype=np.uint8)
-X_test_mask = np.zeros((len(test_ids), MASK_HEIGHT, MASK_WIDTH, IMG_CHANNELS), dtype=np.uint8)
+X_train = np.zeros((len(train_ids), IMG_HEIGHT, IMG_WIDTH, IMG_CHANNELS), dtype=np.uint8)
+X_train_mask = np.zeros((len(train_ids), MASK_HEIGHT, MASK_WIDTH, IMG_CHANNELS), dtype=np.uint8)
 sizes_test = []
 print('Getting and resizing test images ... ')
 sys.stdout.flush()
-for n, id_ in tqdm(enumerate(test_ids), total=len(test_ids)):
-	path = TEST_PATH + id_
+for n, id_ in tqdm(enumerate(train_ids), total=len(train_ids)):
+	path = TRAIN_PATH + id_
 	img = imread(path + '/images/' + id_ + '.png')[:,:,:3]
 	sizes_test.append([img.shape[0], img.shape[1]])
 	
@@ -103,84 +120,100 @@ for n, id_ in tqdm(enumerate(test_ids), total=len(test_ids)):
 				#print("inverted image ",img)
 			img = img[:,:,:1]
 	
-	X_test_mask[n] = resize(img, (MASK_HEIGHT, MASK_WIDTH), mode='constant', preserve_range=True)
+	X_train_mask[n] = resize(img, (MASK_HEIGHT, MASK_WIDTH), mode='constant', preserve_range=True)
 	img = resize(img, (IMG_HEIGHT, IMG_WIDTH), mode='constant', preserve_range=True)
-	X_test[n] = img
+	X_train[n] = img
+		
 print('Done!')
 
-model_centers = load_model('model-96x96x1-centers.h5')
-preds_inner = model_centers.predict(X_test, verbose=1)
+model_centers = load_model('model-128x128x1-centers.h5')
+preds_inner = model_centers.predict(X_train, verbose=1)
 
 model_mask = load_model('model-256x256x1-dataAug-2.h5',custom_objects={'mean_iou':mean_iou})
-preds_mask = model_mask.predict(X_test_mask, verbose=1)
+preds_mask = model_mask.predict(X_train_mask, verbose=1)
 
 # Create list of upsampled test masks, so that the masks match the original image sizes
 preds_inner_upsampled = []
 preds_mask_upsampled = []
-for i in range(len(preds_mask)):
+for i in range(len(preds_inner)):
 	preds_inner_upsampled.append(resize(np.squeeze(preds_inner[i]), 
 									   (sizes_test[i][0], sizes_test[i][1]), 
 									   mode='constant', preserve_range=True))
+									   
 	preds_mask_upsampled.append(resize(np.squeeze(preds_mask[i]), 
 									   (sizes_test[i][0], sizes_test[i][1]), 
 									   mode='constant', preserve_range=True))
 
 #need take the whole mask of the training set and break them down into individual cells
 #use skimage to find separate cells, may have trouble if they overlap
-new_test_ids = []
-rles = []
-for n, id_ in enumerate(test_ids):
+outFile = "center-compare-output.txt"
+file = open(outFile,'w+')
+file.write("averageDistance max min missed total\n")	
+for n, id_ in enumerate(train_ids):
+		
+	if(n%10==0):
+		print('checking image',n,id_)
+	
 	#clean up the mask and make labels
-	mask_thresh = (preds_mask_upsampled[n] > 0.55)
+	mask_norm = preds_mask_upsampled[n]/np.amax(preds_inner_upsampled[n])
+	mask_thresh = (mask_norm > 0.55).astype(np.uint8)
 	mask_labels = label(mask_thresh)
 	
 	#find predictions for the cell centers
 	center_norm = preds_inner_upsampled[n]/np.amax(preds_inner_upsampled[n])
-	center_thresh = (center_norm > 0.5).astype(np.uint8) #0.7 for 128, 0.5 for 96
-	#center_thresh = np.minimum(center_thresh,mask_thresh)
-	center_labels = label(center_thresh)
-	centers = np.zeros((sizes_test[n][0], sizes_test[n][1]), dtype=np.uint8)
+	center_thresh = (center_norm > 0.7).astype(np.uint8)
+	center_labels = ndimage.label(center_thresh)[0]
+	centerList = []
+	centerMap = np.zeros((sizes_test[n][0], sizes_test[n][1]), dtype=np.uint8)
 	for i in range(1,center_labels.max()+1):
 		if(np.sum(center_labels==i) > 10):
 			new_center = ndimage.measurements.center_of_mass(center_labels==i)
-			centers[int(new_center[0]),int(new_center[1])] = 1 
+			centerList.append((new_center[0],new_center[1]))
+			centerMap[int(new_center[0]),int(new_center[1])] = 1
+		#else:
+		#	print('discard center')
 
+		
+	#remove any centers that are outside the mask
+	centerMap = np.minimum(centerMap, mask_thresh)
+	
 	#see if a single mask ever is without centers
 	for i in range(1, mask_labels.max()+1):
 		current_mask = (mask_labels == i).astype(np.uint8)
-		intersections = np.sum(np.multiply(current_mask,centers))
-		if(intersections == 0): 
+		intersections = np.sum(np.multiply(current_mask,centerMap))
+		if(intersections == 0 and np.sum(current_mask)>100): 
 			#print(n, intersections)
 			new_center = ndimage.measurements.center_of_mass(current_mask)
-			centers[int(new_center[0]),int(new_center[1])] = 1
+			#print('new center',new_center)
+			centerList.append((new_center[0],new_center[1]))
 		
-	distance = ndimage.distance_transform_edt(mask_thresh)
-	local_maxi = peak_local_max(distance, labels=mask_thresh,footprint=np.ones((3, 3)),indices=False)
-	markers = ndimage.label(centers)[0]#ndimage.label(local_maxi)[0]
-	cell_watershed = watershed(-distance,markers,mask=mask_thresh)
-	rle = list(prob_to_rles(cell_watershed))
-	rles.extend(rle)
-	new_test_ids.extend([id_] * len(rle))
+	#find centers of given mask
+	path = TRAIN_PATH + id_
+	maskList = []
+	for mask_file in next(os.walk(path + '/masks/'))[2]:
+		mask_ = imread(path+'/masks/'+mask_file) #read each mask for the image
+		
+		if(np.amax(mask_)>0):
+			centerMask = ndimage.measurements.center_of_mass(mask_)
+			#print(mask_file,centerMask)
+			maskList.append(centerMask)
+			
+	#compare the predicted centers with the mask centers
+	#print(centerList)
+	#print(maskList)
+	aveDist, numDiff, minD, maxD = compareCenters(centerList,maskList)
+	file.write(str(aveDist)+ ' '+str(maxD)+' '+str(minD)+' '+str(numDiff)+' '+str(len(maskList))+"\n")	
 	
-	if(n<2):
-		print(id_)
-		pltImg = resize(X_test[n], (sizes_test[n][0], sizes_test[n][1]), mode='constant', preserve_range=True)
+	if(n<5):
+		print(id_, numDiff,str(len(maskList)))
+		print(np.amax(mask_thresh))
+		pltImg = resize(X_train[n], (sizes_test[n][0], sizes_test[n][1]), mode='constant', preserve_range=True)
 		plt.subplot(221)
 		imshow(np.squeeze(pltImg))
 		plt.subplot(222)
 		imshow(np.squeeze(center_thresh))
 		plt.subplot(223)
-		imshow(np.squeeze(mask_labels))
-		
-		plt.subplot(224)
-		imshow(cell_watershed)
-		#plt.scatter(*zip(*centers))
-		#plt.axis([0,sizes_test[n][1], sizes_test[n][0],0])
+		imshow(mask_thresh)
 		plt.show()
-
-	
-# Create submission DataFrame
-sub = pd.DataFrame()
-sub['ImageId'] = new_test_ids
-sub['EncodedPixels'] = pd.Series(rles).apply(lambda x: ' '.join(str(y) for y in x))
-sub.to_csv('sub-dsbowl2018-1.csv', index=False)
+		
+file.close()
