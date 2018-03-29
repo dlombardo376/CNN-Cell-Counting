@@ -39,8 +39,12 @@ IMG_WIDTH = 256
 IMG_HEIGHT = 256
 IMG_CHANNELS = 1
 TEST_PATH = 'videos/'
-VIDEO_NAME = 'Cap200_100416_pos3_C0'
+#VIDEO_NAME = 'Cap200_100416_pos2_C0'
+#VIDEO_NAME = 'Cap200_100416_pos3_C0'
 #VIDEO_NAME = 'Cap2_100516_pos3_C0'
+#VIDEO_NAME = 'Cap4_100516_pos2_C0'
+#VIDEO_NAME = 'Cap1_100616_pos2_C0'
+VIDEO_NAME = 'Cap1_100616_pos3_C0'
 
 warnings.filterwarnings('ignore',category=UserWarning,module='skimage')
 seed=42
@@ -86,7 +90,7 @@ timeSet = 5
 midTime = 2
 X_test = np.zeros((timeSet, IMG_HEIGHT, IMG_WIDTH, IMG_CHANNELS), dtype=np.float32)
 
-for n in range(0,container.shape[0]-190,timeSet):
+for n in range(0,container.shape[0]):
 	all_labels = []
 	for aveIndex in range(timeSet):
 		img = container[n+aveIndex]
@@ -119,7 +123,7 @@ for n in range(0,container.shape[0]-190,timeSet):
 				
 				if(j>0):
 					index,dis = GetClosestIndex(new_center[1],new_center[0],xList,yList)
-					if(dis>15):
+					if(dis>20):
 						xList.append(new_center[1])
 						yList.append(new_center[0])
 				else:
@@ -128,9 +132,9 @@ for n in range(0,container.shape[0]-190,timeSet):
 						
 	im = plt.plot(xList,yList,linestyle='None',marker='+',color='white')
 	im = plt.imshow(np.squeeze(X_test[midTime])) #plot the middle image
-	#plt.savefig('outImages/'+VIDEO_NAME+'_'+str(n)+'.png')
-	#plt.cla()
-	plt.show()
+	plt.savefig('outImages/'+VIDEO_NAME+'_'+str(n)+'.png')
+	plt.cla()
+	#plt.show()
 	
 	
 	
